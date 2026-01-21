@@ -8,9 +8,6 @@ import streamlit as st
 from openai import OpenAI
 from openai import RateLimitError, APITimeoutError, APIError
 
-# ----------------------------
-# UI
-# ----------------------------
 st.set_page_config(page_title="Ses Dosyası → Türkçe Metin", layout="wide")
 st.title("Ses Dosyası → Türkçe Metin")
 st.caption("OpenAI Speech-to-Text API + Streamlit Cloud")
@@ -20,7 +17,7 @@ st.caption("OpenAI Speech-to-Text API + Streamlit Cloud")
 # ----------------------------
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 if not api_key:
-    st.error('OPENAI_API_KEY bulunamadı. Secrets’a şu satırı ekleyin:  OPENAI_API_KEY = "sk-..."')
+    st.error('OPENAI_API_KEY yok. Streamlit Cloud → Secrets:  OPENAI_API_KEY = "sk-..."')
     st.stop()
 
 client = OpenAI(api_key=api_key)
@@ -28,12 +25,9 @@ client = OpenAI(api_key=api_key)
 # ----------------------------
 # Session state
 # ----------------------------
-if "busy" not in st.session_state:
-    st.session_state.busy = False
-if "last_file_sig" not in st.session_state:
-    st.session_state.last_file_sig = None
-if "last_transcript" not in st.session_state:
-    st.session_state.last_transcript = ""
+st.session_state.setdefault("busy", False)
+st.session_state.setdefault("last_file_sig", None)
+st.session_state.setdefault("last_transcript", "")
 
 # ----------------------------
 # Sidebar
@@ -48,21 +42,14 @@ with st.sidebar:
     language = st.text_input("Dil", "tr")
     max_mb = st.number_input("Maks. dosya boyutu (MB)", min_value=1, max_value=200, value=25, step=1)
     auto_run = st.toggle("Dosya yüklenince otomatik transkribe et", value=True)
+    st.caption("Not: Rate limit/kota durumunda uygulama çökmez; uyarı verir.")
 
-# ----------------------------
-# Upload
-# ----------------------------
 uploaded_file = st.file_uploader(
     "Ses dosyası yükleyin",
     type=["wav", "mp3", "m4a", "mp4", "ogg", "flac", "webm"],
-    key="audio_uploader"
 )
 
 def file_signature(file_obj) -> str:
-    """
-    Streamlit rerun'larında aynı dosyayı tekrar işlememek için imza üretir.
-    Büyük dosyayı komple hashlemiyoruz; ilk 1MB + name + size yeterli.
-    """
     head = file_obj.getbuffer()[:1024 * 1024]
     h = hashlib.sha256()
     h.update(head)
@@ -70,53 +57,57 @@ def file_signature(file_obj) -> str:
     h.update(file_obj.name.encode("utf-8", errors="ignore"))
     return h.hexdigest()
 
-def transcribe_with_retry(file_path: Path, max_retries: int = 5):
+def retry_after_seconds(err: RateLimitError) -> float | None:
+    """
+    OpenAI SDK hata objesinde Retry-After bilgisi gelirse onu okumaya çalışır.
+    Farklı SDK versiyonlarında header erişimi değişebildiği için güvenli yazıldı.
+    """
+    try:
+        # err.response headers (bazı sürümlerde)
+        headers = getattr(err, "response", None)
+        if headers is not None and hasattr(headers, "headers"):
+            ra = headers.headers.get("retry-after") or headers.headers.get("Retry-After")
+            if ra:
+                return float(ra)
+    except Exception:
+        pass
+    return None
+
+def transcribe_with_retry(file_path: Path, max_retries: int = 6) -> str:
     base_sleep = 2.0
     last_err = None
+
     for attempt in range(1, max_retries + 1):
         try:
-            return client.audio.transcriptions.create(
+            res = client.audio.transcriptions.create(
                 file=file_path,
                 model=model,
                 language=language
             )
+            return res.text
+
         except RateLimitError as e:
             last_err = e
-            sleep_s = min(base_sleep * (2 ** (attempt - 1)), 30)
-            st.warning(f"Rate limit. {sleep_s:.0f} sn bekleyip tekrar deniyorum... ({attempt}/{max_retries})")
+            ra = retry_after_seconds(e)
+            sleep_s = ra if ra is not None else min(base_sleep * (2 ** (attempt - 1)), 60)
+
+            st.warning(
+                f"Rate limit/kota. {sleep_s:.0f} sn bekleyip tekrar deniyorum... "
+                f"({attempt}/{max_retries})"
+            )
             time.sleep(sleep_s)
+
         except (APITimeoutError, APIError) as e:
             last_err = e
-            sleep_s = min(base_sleep * (2 ** (attempt - 1)), 20)
-            st.warning(f"Geçici hata. {sleep_s:.0f} sn sonra tekrar... ({attempt}/{max_retries})")
+            sleep_s = min(base_sleep * (2 ** (attempt - 1)), 30)
+            st.warning(f"Geçici API/ağ hatası. {sleep_s:.0f} sn sonra tekrar... ({attempt}/{max_retries})")
             time.sleep(sleep_s)
+
+    # Buraya geldiysek başarısız.
     raise last_err
 
-def run_transcription():
-    st.session_state.busy = True
-    try:
-        suffix = Path(uploaded_file.name).suffix or ".audio"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.getbuffer())
-            tmp_path = Path(tmp.name)
-
-        try:
-            result = transcribe_with_retry(tmp_path, max_retries=5)
-            st.session_state.last_transcript = result.text
-            st.success("Transkripsiyon tamamlandı.")
-        finally:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-    finally:
-        st.session_state.busy = False
-
-# ----------------------------
-# Main flow
-# ----------------------------
 if not uploaded_file:
-    st.info("Dosya yükleyin. Otomatik transkribe açık ise yükleme sonrası işlem başlayacak.")
+    st.info("Dosya yükleyin. Otomatik açık ise yükleme sonrası işlem başlar.")
     st.stop()
 
 st.audio(uploaded_file)
@@ -136,15 +127,44 @@ with col1:
 with col2:
     manual = st.button("Transkribe Et", type="primary", disabled=st.session_state.busy)
 
-# Otomatik çalıştırma: yeni dosya yüklendiyse ve auto açık ise
 should_auto_run = auto_run and (st.session_state.last_file_sig != sig)
+
+def run_transcription():
+    st.session_state.busy = True
+    try:
+        suffix = Path(uploaded_file.name).suffix or ".audio"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            tmp_path = Path(tmp.name)
+
+        try:
+            text = transcribe_with_retry(tmp_path, max_retries=6)
+            st.session_state.last_transcript = text
+            st.success("Transkripsiyon tamamlandı.")
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    except RateLimitError:
+        st.error(
+            "Rate limit veya kota/billing sorunu.\n\n"
+            "Yapılacaklar:\n"
+            "1) 1-2 dakika bekleyip tekrar deneyin.\n"
+            "2) OpenAI hesabınızda ilgili Project/Org için Billing ve Usage limitlerini kontrol edin.\n"
+            "3) Aynı anda çok deneme yapmayın (Streamlit rerun + tekrar tıklama limiti tetikler)."
+        )
+    except Exception as e:
+        st.error(f"Beklenmeyen hata: {type(e).__name__}: {e}")
+    finally:
+        st.session_state.busy = False
 
 if manual or should_auto_run:
     st.session_state.last_file_sig = sig
     with st.spinner("Transkripsiyon yapılıyor..."):
         run_transcription()
 
-# Çıktı
 if st.session_state.last_transcript:
     st.text_area("Türkçe Metin", st.session_state.last_transcript, height=350)
     st.download_button(
@@ -154,4 +174,4 @@ if st.session_state.last_transcript:
         mime="text/plain"
     )
 else:
-    st.info("Henüz transkripsiyon çalışmadı. Otomatik kapalıysa 'Transkribe Et' butonuna basın.")
+    st.info("Transkripsiyon henüz üretilmedi. Otomatik kapalıysa butona basın.")
