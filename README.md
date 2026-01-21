@@ -1,18 +1,19 @@
 
-# Streamlit Ses → Metin (Türkçe)
+# Ücretsiz Ses → Metin (Türkçe)
 
-## Kurulum
-1. Repo'yu GitHub'a yükleyin
-2. Streamlit Cloud → New App
-3. `OPENAI_API_KEY` değerini **Secrets** kısmına ekleyin
+Bu uygulama OpenAI API kullanmaz.
+Offline Whisper (faster-whisper) ile çalışır.
 
-## Çalışma
-- Kullanıcı ses dosyasını yükler
-- OpenAI Speech-to-Text API ile transkripsiyon yapılır
-- Türkçe metin aynı ekranda gösterilir
+## Dosyalar
+- app.py
+- requirements.txt
+- packages.txt
 
-## Önerilen Model
-- gpt-4o-mini-transcribe (en iyi fiyat/performans)
+## Streamlit Cloud
+- Repo'yu GitHub'a yükleyin
+- Streamlit Cloud → New App
+- app.py seçin
 
-## Not
-Eğer sample audio çalışmazsa, kendi sesinizle kısa bir Türkçe kayıt alın.
+## Notlar
+- İlk çalıştırmada model indirileceği için bekleme olabilir
+- tiny / base modelleri önerilir
